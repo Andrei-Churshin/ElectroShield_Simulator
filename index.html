@@ -24,6 +24,8 @@
 .device .symbol{font-size:24px;line-height:1}
 .device b{font-size:11px;margin:2px 0}
 .device .name{font-size:9px;color:var(--muted);text-align:center}
+.wire-current{font-size:10px;color:#198754;font-weight:600;margin-left:6px;font-family:monospace}
+.wireitem{display:flex;align-items:center;gap:6px;padding:4px 0}
 </style></head>
 <body>
 <header><h1>⚡ Симулятор сборки электрощитов</h1><p>Версия 0.3 · проверка соединений · обучение и экзамен</p></header>
@@ -78,11 +80,11 @@ class CircuitSolver {
   constructor(devices, wires) {
     this.devices = devices;
     this.wires = wires;
-    this.nodes = new Map(); // key -> {voltage, terminals[]}
+    this.nodes = new Map(); // nodeId -> {voltage, terminals[], fixed}
     this.terminalToNode = new Map(); // terminalKey -> nodeId
     this.results = {
       terminalVoltages: new Map(), // terminalKey -> voltage
-      wireCurrents: new Map(), // wireId -> {current, voltageDrop}
+      wireCurrents: new Map(), // wireId -> {current, direction: 'a->b'|'b->a'}
       loadStates: new Map(), // deviceId -> {powered, current, voltage}
       trippedDevices: new Set()
     };
@@ -92,6 +94,7 @@ class CircuitSolver {
     this.buildNodes();
     this.assignVoltages();
     this.calculateLoads();
+    this.calculateWireCurrents();
     this.checkProtection();
     return this.results;
   }
@@ -101,8 +104,7 @@ class CircuitSolver {
     this.terminalToNode.clear();
     let nodeId = 0;
 
-    // Each wire connects two terminals -> they share a node
-    // Use Union-Find for connected components
+    // Union-Find for connected components
     const parent = new Map();
     const find = (x) => {
       if (!parent.has(x)) parent.set(x, x);
@@ -119,6 +121,16 @@ class CircuitSolver {
       union(w.a.key, w.b.key);
     });
 
+    // Busbars internally connect their terminals (no wire needed)
+    this.devices.forEach(d => {
+      if (d.type === 'busN' || d.type === 'busPE') {
+        const termKeys = d.terms.map(t => t.key);
+        for (let i = 1; i < termKeys.length; i++) {
+          union(termKeys[0], termKeys[i]);
+        }
+      }
+    });
+
     // Group terminals by root
     const groups = new Map();
     this.devices.forEach(d => d.terms.forEach(t => {
@@ -127,7 +139,7 @@ class CircuitSolver {
       groups.get(root).push({device: d, term: t});
     }));
 
-    // Assign node IDs and voltages
+    // Assign node IDs
     groups.forEach((terminals, root) => {
       const nid = `N${nodeId++}`;
       terminals.forEach(({device, term}) => {
@@ -136,29 +148,29 @@ class CircuitSolver {
       this.nodes.set(nid, {
         id: nid,
         terminals: terminals,
-        voltage: 0, // Will be calculated
+        voltage: 0,
+        fixed: false,
         isGround: terminals.some(t => /^PE/i.test(t.term.label))
       });
     });
   }
 
   assignVoltages() {
-    // Find source nodes (connected to main input)
-    // Simplified: Assume 230V on L IN of main breaker when ON, 0V on N/PE buses
+    // Find main breaker/switch
     const mainDev = this.devices.find(d => d.type === 'main' || d.type === 'mains');
     if (!mainDev) return;
 
     const mainState = mainDev.state || 'off';
-    if (mainState !== 'on') return; // No power if main is off
+    if (mainState !== 'on') return;
 
-    // Set source voltage: L IN of main = 230V (phase)
+    // Source: L IN of main = 230V (phase)
     const lInTerm = mainDev.terms.find(t => /L\s*IN/i.test(t.label));
     if (lInTerm) {
       const nodeId = this.terminalToNode.get(lInTerm.key);
       if (nodeId) this.setNodeVoltage(nodeId, 230);
     }
 
-    // Set reference: N and PE buses = 0V
+    // Reference: N and PE buses = 0V
     this.devices.forEach(d => {
       if (d.type === 'busN' || d.type === 'busPE') {
         d.terms.forEach(t => {
@@ -176,43 +188,51 @@ class CircuitSolver {
     const node = this.nodes.get(nodeId);
     if (!node) return;
     node.voltage = voltage;
-    node.fixed = true; // Voltage source / ground reference
+    node.fixed = true;
     node.terminals.forEach(({term}) => {
       this.results.terminalVoltages.set(term.key, voltage);
     });
   }
 
   propagateVoltages() {
-    // BFS from fixed voltage nodes through closed switches
-    const queue = [];
-    this.nodes.forEach((node, nid) => {
-      if (node.fixed) queue.push(nid);
-    });
+    // Iterative propagation until stable (handles contactor coil -> main contacts)
+    let changed = true;
+    let iterations = 0;
+    const maxIterations = 10;
 
-    const visited = new Set(queue);
+    while (changed && iterations < maxIterations) {
+      changed = false;
+      iterations++;
 
-    while (queue.length) {
-      const currentNid = queue.shift();
-      const currentNode = this.nodes.get(currentNid);
-      if (!currentNode) continue;
+      // For each device, check if it passes voltage from input to output terminals
+      this.devices.forEach(device => {
+        if (!device.switchable) return;
+        const state = device.state || 'off';
+        const tripped = device.tripped === true;
+        if (tripped || state !== 'on') return;
 
-      // For each terminal in this node, check its device
-      currentNode.terminals.forEach(({device, term}) => {
-        // If device is a switchable element, check if it passes voltage to other terminals
-        const otherTerms = this.getOutputTerminals(device, term);
-        otherTerms.forEach(outTerm => {
-          const outNodeId = this.terminalToNode.get(outTerm.key);
-          if (outNodeId && !visited.has(outNodeId)) {
-            const outNode = this.nodes.get(outNodeId);
-            if (outNode && !outNode.fixed) {
-              outNode.voltage = currentNode.voltage;
-              outNode.terminals.forEach(({term: t}) => {
-                this.results.terminalVoltages.set(t.key, currentNode.voltage);
-              });
-              visited.add(outNodeId);
-              queue.push(outNodeId);
+        // Get all terminals of this device with known voltages
+        device.terms.forEach(term => {
+          const nodeId = this.terminalToNode.get(term.key);
+          const node = nodeId ? this.nodes.get(nodeId) : null;
+          const voltage = node ? node.voltage : undefined;
+          if (voltage === undefined) return;
+
+          // Find output terminals for this input
+          const outputs = this.getOutputTerminals(device, term);
+          outputs.forEach(outTerm => {
+            const outNodeId = this.terminalToNode.get(outTerm.key);
+            if (outNodeId) {
+              const outNode = this.nodes.get(outNodeId);
+              if (outNode && !outNode.fixed && outNode.voltage !== voltage) {
+                outNode.voltage = voltage;
+                outNode.terminals.forEach(({term: t}) => {
+                  this.results.terminalVoltages.set(t.key, voltage);
+                });
+                changed = true;
+              }
             }
-          }
+          });
         });
       });
     }
@@ -223,35 +243,39 @@ class CircuitSolver {
     const state = device.state || 'off';
     const tripped = device.tripped === true;
 
-    if (tripped || state !== 'on') return outputs; // Open circuit
+    if (tripped || state !== 'on') return outputs;
 
     switch (device.type) {
       case 'main':
       case 'breaker':
-        // L IN -> L OUT
+        // L IN -> L OUT (single pole for simplicity)
         if (/IN/i.test(inputTerm.label)) {
           const out = device.terms.find(t => /OUT/i.test(t.label));
           if (out) outputs.push(out);
         }
         break;
       case 'rcd':
-        // L IN -> L OUT, N IN -> N OUT (both must be ON)
+        // L IN -> L OUT, N IN -> N OUT
         if (/IN/i.test(inputTerm.label)) {
-          const out = device.terms.find(t => t.label.replace('IN','OUT') === inputTerm.label.replace('IN','OUT'));
+          const out = device.terms.find(t => 
+            t.label.replace('IN','OUT') === inputTerm.label.replace('IN','OUT')
+          );
           if (out) outputs.push(out);
         }
         break;
       case 'contactor':
-        // Power path: L IN -> T OUT (main contacts)
-        // Coil path: A1 -> A2 (coil energized separately)
+        // Main contacts: L IN -> T OUT (only if coil energized)
         if (/L\s*IN/i.test(inputTerm.label)) {
-          const out = device.terms.find(t => /T\s*OUT/i.test(t.label));
-          if (out) outputs.push(out);
+          // Check if coil is energized
+          const coilEnergized = this.isCoilEnergized(device);
+          if (coilEnergized) {
+            const out = device.terms.find(t => /T\s*OUT/i.test(t.label));
+            if (out) outputs.push(out);
+          }
         }
-        // Coil doesn't pass power through, it's a load
         break;
       case 'overload':
-        // L IN -> T OUT (NC contact, opens on trip)
+        // L IN -> T OUT (NC contact)
         if (/IN/i.test(inputTerm.label)) {
           const out = device.terms.find(t => /OUT/i.test(t.label));
           if (out) outputs.push(out);
@@ -259,14 +283,38 @@ class CircuitSolver {
         break;
       case 'busN':
       case 'busPE':
-        // Busbars connect all terminals together (already handled by node grouping)
+        // Busbars: all terminals connected (handled by Union-Find, but keep for completeness)
         device.terms.forEach(t => { if (t.key !== inputTerm.key) outputs.push(t); });
-        break;
-      default:
-        // Loads, coils - no pass-through
         break;
     }
     return outputs;
+  }
+
+  isCoilEnergized(contactor) {
+    // Find coil device linked to this contactor
+    const coilDev = this.devices.find(d => d.type === 'coil');
+    if (!coilDev || coilDev.state !== 'on') return false;
+
+    // Check if A1 has voltage and A2 connected to N (0V)
+    const a1Term = contactor.terms.find(t => /A1/i.test(t.label));
+    const a2Term = contactor.terms.find(t => /A2/i.test(t.label));
+    const coilA1 = coilDev.terms.find(t => /A1/i.test(t.label));
+    const coilA2 = coilDev.terms.find(t => /A2/i.test(t.label));
+
+    if (!a1Term || !a2Term || !coilA1 || !coilA2) return false;
+
+    const a1NodeId = this.terminalToNode.get(a1Term.key);
+    const a2NodeId = this.terminalToNode.get(a2Term.key);
+    const coilA1NodeId = this.terminalToNode.get(coilA1.key);
+    const coilA2NodeId = this.terminalToNode.get(coilA2.key);
+
+    // Coil terminals are wired to contactor A1/A2
+    // Check if contactor A1 has voltage (from wire) and A2 is at 0V (connected to N)
+    const a1Voltage = a1NodeId ? this.nodes.get(a1NodeId)?.voltage : undefined;
+    const a2Voltage = a2NodeId ? this.nodes.get(a2NodeId)?.voltage : undefined;
+
+    return a1Voltage !== undefined && Math.abs(a1Voltage) > 10 && 
+           a2Voltage !== undefined && Math.abs(a2Voltage) < 10;
   }
 
   calculateLoads() {
@@ -280,14 +328,61 @@ class CircuitSolver {
 
         if (vL !== undefined && vN !== undefined) {
           const voltage = Math.abs(vL - vN);
-          const powered = voltage > 10; // Threshold
+          const powered = voltage > 10;
           let current = 0;
           if (powered && d.power) {
-            current = d.power / voltage; // Simplified P=UI
+            current = d.power / voltage; // P=UI
           }
           this.results.loadStates.set(d.id, {powered, voltage, current, device: d});
         }
       }
+    });
+  }
+
+  calculateWireCurrents() {
+    // Calculate current in each wire based on loads downstream
+    this.wires.forEach(wire => {
+      const nodeAId = this.terminalToNode.get(wire.a.key);
+      const nodeBId = this.terminalToNode.get(wire.b.key);
+      if (!nodeAId || !nodeBId || nodeAId === nodeBId) return;
+
+      const nodeA = this.nodes.get(nodeAId);
+      const nodeB = this.nodes.get(nodeBId);
+      if (!nodeA || !nodeB) return;
+
+      // Determine direction: from higher voltage to lower (for DC/AC simplified)
+      // For AC, we track magnitude and direction from source to load
+      // Simplified: find loads connected to each node
+      let currentA = 0, currentB = 0;
+      
+      this.results.loadStates.forEach(load => {
+        load.device.terms.forEach(t => {
+          const tNodeId = this.terminalToNode.get(t.key);
+          if (tNodeId === nodeAId) currentA += load.current;
+          if (tNodeId === nodeBId) currentB += load.current;
+        });
+      });
+
+      // Current flows from source to load
+      // If nodeA has higher voltage, current flows A->B
+      const vA = nodeA.voltage;
+      const vB = nodeB.voltage;
+      
+      let current = 0;
+      let direction = 'a->b';
+      
+      if (Math.abs(vA) > Math.abs(vB)) {
+        current = currentB; // Load on B side
+        direction = 'a->b';
+      } else if (Math.abs(vB) > Math.abs(vA)) {
+        current = currentA; // Load on A side
+        direction = 'b->a';
+      } else {
+        current = Math.max(currentA, currentB);
+        direction = 'a->b';
+      }
+
+      this.results.wireCurrents.set(wire.id, {current, direction});
     });
   }
 
@@ -302,28 +397,23 @@ class CircuitSolver {
 
       switch (d.tripType) {
         case 'overcurrent':
-          // Check current through this breaker
-          // Find load current on output side
           const outTerm = d.terms.find(t => /OUT/i.test(t.label));
           if (outTerm) {
             const nodeId = this.terminalToNode.get(outTerm.key);
             if (nodeId) {
-              // Sum currents of all loads downstream
               let totalCurrent = 0;
               this.results.loadStates.forEach(load => {
-                // Check if load is connected to this node
-                const loadDev = load.device;
-                loadDev.terms.forEach(t => {
+                load.device.terms.forEach(t => {
                   if (this.terminalToNode.get(t.key) === nodeId) {
                     totalCurrent += load.current;
                   }
                 });
               });
-              if (totalCurrent > d.rated * 1.2) { // 120% of rated
+              if (totalCurrent > d.rated * 1.2) {
                 shouldTrip = true;
                 tripReason = `Overcurrent: ${totalCurrent.toFixed(1)}A > ${d.rated}A`;
               }
-              // Short circuit detection: L directly connected to N/PE on output
+              // Short circuit: L connected to N/PE on output node
               const outNode = this.nodes.get(nodeId);
               if (outNode) {
                 const hasL = outNode.terminals.some(t => /^L/i.test(t.term.label) && !/OUT/i.test(t.term.label));
@@ -331,50 +421,49 @@ class CircuitSolver {
                 const hasPE = outNode.terminals.some(t => /^PE/i.test(t.term.label));
                 if (hasL && (hasN || hasPE)) {
                   shouldTrip = true;
-                  tripReason = 'Short circuit detected';
+                  tripReason = 'Short circuit detected (L-N/PE)';
                 }
               }
             }
           }
           break;
         case 'residual':
-          // RCD: Compare L and N currents
+          // RCD: Compare L and N currents through the device
           const lIn = d.terms.find(t => /L\s*IN/i.test(t.label));
           const nIn = d.terms.find(t => /N\s*IN/i.test(t.label));
           const lOut = d.terms.find(t => /L\s*OUT/i.test(t.label));
           const nOut = d.terms.find(t => /N\s*OUT/i.test(t.label));
           
           if (lIn && nIn && lOut && nOut) {
-            const lInNode = this.nodes.get(this.terminalToNode.get(lIn.key));
-            const nInNode = this.nodes.get(this.terminalToNode.get(nIn.key));
-            const lOutNode = this.nodes.get(this.terminalToNode.get(lOut.key));
-            const nOutNode = this.nodes.get(this.terminalToNode.get(nOut.key));
+            const lInNodeId = this.terminalToNode.get(lIn.key);
+            const nInNodeId = this.terminalToNode.get(nIn.key);
+            const lOutNodeId = this.terminalToNode.get(lOut.key);
+            const nOutNodeId = this.terminalToNode.get(nOut.key);
             
-            // Simplified: check if L current != N current on output side
             let lCurrent = 0, nCurrent = 0;
-            if (lOutNode) {
+            // Current through RCD = current on output side
+            if (lOutNodeId) {
               this.results.loadStates.forEach(load => {
                 load.device.terms.forEach(t => {
-                  if (this.terminalToNode.get(t.key) === lOutNode.id) lCurrent += load.current;
+                  if (this.terminalToNode.get(t.key) === lOutNodeId) lCurrent += load.current;
                 });
               });
             }
-            if (nOutNode) {
+            if (nOutNodeId) {
               this.results.loadStates.forEach(load => {
                 load.device.terms.forEach(t => {
-                  if (this.terminalToNode.get(t.key) === nOutNode.id) nCurrent += load.current;
+                  if (this.terminalToNode.get(t.key) === nOutNodeId) nCurrent += load.current;
                 });
               });
             }
             const residual = Math.abs(lCurrent - nCurrent);
-            if (residual > (d.sensitivity / 1000)) { // mA to A
+            if (residual > (d.sensitivity / 1000)) {
               shouldTrip = true;
               tripReason = `Residual current: ${(residual*1000).toFixed(0)}mA > ${d.sensitivity}mA`;
             }
           }
           break;
         case 'thermal':
-          // Thermal overload - check motor current
           const overloadIn = d.terms.find(t => /IN/i.test(t.label));
           if (overloadIn) {
             const nodeId = this.terminalToNode.get(overloadIn.key);
@@ -418,7 +507,7 @@ function positions(){let result={};[1,2].forEach(r=>{let arr=devices.filter(d=>d
 function point(did,key){let d=devices.find(x=>x.id===did),p=positions()[did];if(!d||!p)return null;let t=d.terms.find(x=>x.key===key),i=t.i;return {x:p.x+(i%2===0?0:88),y:i<2?p.y+88:p.y+16+(i-2)*20}}
 function render(){board.querySelectorAll('.device,.terminal').forEach(e=>e.remove());let pos=positions();devices.forEach(d=>{let p=pos[d.id],b=document.createElement('div');b.className='device'+(selected===d.id?' selected':'');b.dataset.id=d.id;b.style.left=p.x+'px';b.style.top=p.y+'px';b.innerHTML=`<span class="symbol">${d.sym}</span><b>${d.short}</b><span class="name">${d.name}</span>`;if(d.switchable){let stateCls=d.tripped?'tripped':(d.state==='on'?'on':'off');let stateTxt=d.tripped?'TRIP':(d.state==='on'?'I':'O');b.innerHTML+=`<span class="switch-state ${stateCls}" title="Нажми для переключения">${stateTxt}</span>`;b.onclick=()=>{toggleDevice(d.id);render();runSimulation()}}else{b.onclick=()=>{selected=d.id;render();say(`Выбран ${d.short}. Нажми на одну из его клемм.`,'warn')}}board.appendChild(b);d.terms.forEach(t=>{let q=document.createElement('button');q.className='terminal';let volt=simulationResults?.terminalVoltages?.get(t.key);if(volt!==undefined && volt>10)q.classList.add('live');q.style.background=t.color;q.style.left=(p.x+(t.i%2===0?-6:80))+'px';q.style.top=(t.i<2?p.y+80:p.y+9+(t.i-2)*20)+'px';q.title=d.short+': '+t.label+(volt!==undefined?` ${volt.toFixed(0)}V`:'');q.onclick=e=>{e.stopPropagation();pick(d.id,t)};board.appendChild(q)})});drawWires()}
 function pick(did,t){if(!pending){pending={did,key:t.key,label:t.label};say(`Начало: ${devices.find(d=>d.id===did).short} · ${t.label}. Теперь выбери вторую клемму.`,'warn');return}if(pending.key===t.key){pending=null;say('Это та же клемма. Выбери начало заново.','bad');return}if(pending.did===did){pending=null;bad++;score();say('Соединяй клеммы разных аппаратов.','bad');return}if(wires.some(w=>(w.a.key===pending.key&&w.b.key===t.key)||(w.a.key===t.key&&w.b.key===pending.key))){pending=null;say('Эти клеммы уже соединены.','warn');return}let color=$('color').value;wires.push({id:idCounter++,a:{...pending},b:{did,key:t.key,label:t.label},color});pending=null;good++;render();score();say('Провод создан. Проверка схемы оценит типы клемм и ожидаемые связи.','good')}
-function drawWires(){let svg=$('svg');svg.innerHTML='';wires.forEach(w=>{let a=point(w.a.did,w.a.key),b=point(w.b.did,w.b.key);if(!a||!b)return;let p=document.createElementNS('http://www.w3.org/2000/svg','path');p.setAttribute('d',`M${a.x+6} ${a.y+6} C${a.x+6} ${(a.y+b.y)/2},${b.x+6} ${(a.y+b.y)/2},${b.x+6} ${b.y+6}`);p.setAttribute('fill','none');p.setAttribute('stroke',w.color);p.setAttribute('stroke-width','4');p.setAttribute('stroke-linecap','round');svg.appendChild(p)});let list=$('wirelist');list.innerHTML='';if(!wires.length){list.innerHTML='<div class="muted">Проводов пока нет.</div>';return}wires.forEach(w=>{let a=devices.find(d=>d.id===w.a.did),b=devices.find(d=>d.id===w.b.did),el=document.createElement('div');el.className='wireitem';el.innerHTML=`<span class="swatch" style="background:${w.color}"></span><span class="wiredesc">${a?.short}:${w.a.label} ↔ ${b?.short}:${w.b.label}</span><button class="danger small">×</button>`;el.querySelector('button').onclick=()=>{wires=wires.filter(x=>x.id!==w.id);render();say('Провод удалён.','warn')};list.appendChild(el)})}
+function drawWires(){let svg=$('svg');svg.innerHTML='';if(!svg.querySelector('defs')){let defs=document.createElementNS('http://www.w3.org/2000/svg','defs');defs.innerHTML=`<marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#30343b"/></marker>`;svg.appendChild(defs)}wires.forEach(w=>{let a=point(w.a.did,w.a.key),b=point(w.b.did,w.b.key);if(!a||!b)return;let p=document.createElementNS('http://www.w3.org/2000/svg','path');p.setAttribute('d',`M${a.x+6} ${a.y+6} C${a.x+6} ${(a.y+b.y)/2},${b.x+6} ${(a.y+b.y)/2},${b.x+6} ${b.y+6}`);p.setAttribute('fill','none');p.setAttribute('stroke',w.color);p.setAttribute('stroke-width','4');p.setAttribute('stroke-linecap','round');svg.appendChild(p)});let list=$('wirelist');list.innerHTML='';if(!wires.length){list.innerHTML='<div class="muted">Проводов пока нет.</div>';return}wires.forEach(w=>{let a=devices.find(d=>d.id===w.a.did),b=devices.find(d=>d.id===w.b.did),el=document.createElement('div');el.className='wireitem';let currentInfo='';if(simulationResults?.wireCurrents?.has(w.id)){const wc=simulationResults.wireCurrents.get(w.id);if(wc.current>0.01)currentInfo=` <span class="wire-current">${wc.current.toFixed(2)}A ${wc.direction==='a->b'?'→':'←'}</span>`}el.innerHTML=`<span class="swatch" style="background:${w.color}"></span><span class="wiredesc">${a?.short}:${w.a.label} ↔ ${b?.short}:${w.b.label}${currentInfo}</span><button class="danger small">×</button>`;el.querySelector('button').onclick=()=>{wires=wires.filter(x=>x.id!==w.id);render();say('Провод удалён.','warn')};list.appendChild(el)})}
 function score(){$('score').textContent=`Верные действия: ${good} · Ошибки: ${bad}`;$('bar').style.width=Math.min(100,Math.round(devices.length*8+wires.length*8))+'%'}
 function reset(){devices=[];wires=[];idCounter=1;good=bad=0;pending=selected=null;simulationResults=null;render();score();$('results').textContent='Проверка ещё не выполнялась.';$('feedback').textContent='Добавь компоненты, затем соедини соответствующие клеммы.';say('Поле очищено. Начни сборку заново.')}
 
@@ -426,7 +515,7 @@ function toggleDevice(did){let d=devices.find(x=>x.id===did);if(!d||!d.switchabl
 
 function runSimulation(){const solver=new CircuitSolver(devices,wires);simulationResults=solver.solve();updateWireVisuals();updateLoadVisuals();checkTrippedDevices()}
 
-function updateWireVisuals(){if(!simulationResults)return;const svg=$('svg');svg.querySelectorAll('path').forEach((path,i)=>{const wire=wires[i];if(!wire)return;const vA=simulationResults.terminalVoltages.get(wire.a.key)||0;const vB=simulationResults.terminalVoltages.get(wire.b.key)||0;const live=Math.abs(vA)>10||Math.abs(vB)>10;if(live){path.classList.add('live-wire');path.setAttribute('stroke-dasharray','8 4');path.setAttribute('stroke-dashoffset',Date.now()/20%12)}else{path.classList.remove('live-wire');path.removeAttribute('stroke-dasharray');path.removeAttribute('stroke-dashoffset')}})}
+function updateWireVisuals(){if(!simulationResults)return;const svg=$('svg');svg.querySelectorAll('path').forEach((path,i)=>{const wire=wires[i];if(!wire)return;const vA=simulationResults.terminalVoltages.get(wire.a.key)||0;const vB=simulationResults.terminalVoltages.get(wire.b.key)||0;const live=Math.abs(vA)>10||Math.abs(vB)>10;if(live){path.classList.add('live-wire');path.setAttribute('stroke-dasharray','8 4');path.setAttribute('stroke-dashoffset',Date.now()/20%12)}else{path.classList.remove('live-wire');path.removeAttribute('stroke-dasharray');path.removeAttribute('stroke-dashoffset')}const wc=simulationResults.wireCurrents?.get(wire.id);if(wc && wc.current>0.01){path.setAttribute('marker-end','url(#arrow)')}else{path.removeAttribute('marker-end')}})}
 
 function updateLoadVisuals(){if(!simulationResults)return;simulationResults.loadStates.forEach((load,did)=>{const devEl=board.querySelector(`.device[data-id="${did}"]`);if(devEl){let old=devEl.querySelector('.load-indicator');if(old)old.remove();if(load.powered){let ind=document.createElement('span');ind.className='load-indicator';ind.textContent=load.device.loadType==='motor'?'⟳':'☀';ind.title=`Напряжение: ${load.voltage.toFixed(0)}V, Ток: ${load.current.toFixed(2)}A`;devEl.appendChild(ind)}}})}
 

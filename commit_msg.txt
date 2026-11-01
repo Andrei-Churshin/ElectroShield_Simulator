@@ -1,0 +1,1 @@
+Stage 1.1: Improved CircuitSolver - contactor coil control, busbars internal connection, wire current arrows, iterative voltage propagation
