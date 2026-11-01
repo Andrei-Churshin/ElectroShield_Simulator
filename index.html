@@ -1,0 +1,442 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Электрощит — симулятор v0.3</title>
+<style>
+:root{--bg:#eef3f8;--card:#fff;--ink:#182b3d;--muted:#5f7182;--line:#d6e0e9;--blue:#1769aa;--green:#198754;--red:#b42318}
+*{box-sizing:border-box}body{margin:0;font:15px/1.45 system-ui,Arial,sans-serif;background:var(--bg);color:var(--ink)}header{padding:18px;background:#102a43;color:#fff}header h1{margin:0;font-size:clamp(22px,4vw,30px)}header p{margin:5px 0 0;color:#d5e6f5}main{max-width:1450px;margin:auto;padding:14px;display:grid;grid-template-columns:265px minmax(300px,1fr) 285px;gap:14px}.panel{background:var(--card);border:1px solid var(--line);border-radius:13px;padding:14px;min-width:0;box-shadow:0 2px 8px #102a4308}h2{font-size:17px;margin:0 0 12px}h3{font-size:14px;margin:16px 0 8px}label{display:block;font-weight:650;margin:8px 0 4px}select,button{font:inherit}select{width:100%;padding:9px;border:1px solid #b7c7d6;border-radius:8px;background:white;color:var(--ink)}button{border:0;border-radius:8px;padding:9px 11px;background:var(--blue);color:#fff;font-weight:650;cursor:pointer}button:disabled{opacity:.45}.secondary{background:#e7eef5;color:#18344d}.danger{background:#a52b2b}.small{font-size:12px;padding:5px 7px}.muted{font-size:12px;color:var(--muted)}.row{display:flex;gap:8px;flex-wrap:wrap}.row>*{flex:1}.parts{display:grid;grid-template-columns:1fr 1fr;gap:7px}.part{background:#f8fafc;color:var(--ink);border:1px solid var(--line);text-align:left;padding:9px}.part small{display:block;color:var(--muted);font-weight:400}.boardwrap{overflow:auto;border:1px solid #bdcbd8;border-radius:10px}.board{position:relative;width:700px;height:420px;background-image:linear-gradient(#e0e8ef 1px,transparent 1px),linear-gradient(90deg,#e0e8ef 1px,transparent 1px);background-size:20px 20px;background-color:#f8fafc}.rail{position:absolute;left:25px;right:25px;height:8px;background:#b8c5d0;border:1px solid #899cab;border-radius:3px}.rail.one{top:120px}.rail.two{top:280px}.device{position:absolute;width:88px;height:88px;border:2px solid #8095a7;background:#fff;color:var(--ink);border-radius:7px;z-index:2;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:4px;text-align:center}.device.selected{border:3px solid var(--blue);box-shadow:0 0 0 3px #1769aa22}.device b{font-size:11px}.device .symbol{font-size:23px}.device .name{font-size:10px;color:#526578}.terminal{position:absolute;width:14px;height:14px;border:2px solid white;box-shadow:0 0 0 1px #253d50;border-radius:50%;z-index:5;padding:0}.wire-svg{position:absolute;inset:0;width:700px;height:420px;z-index:1;pointer-events:none}.status{padding:10px;background:#f1f5f9;border-radius:8px;margin-top:10px;font-size:13px}.status.good{background:#e8f6ed;color:#155d3b}.status.bad{background:#fff0ef;color:#8e2018}.status.warn{background:#fff6df;color:#795100}.tip{padding:10px;border-left:4px solid #e4ad28;background:#fff8e6;border-radius:5px;font-size:13px}.wirelist{display:flex;flex-direction:column;gap:7px}.wireitem{display:flex;align-items:center;gap:7px;border:1px solid var(--line);border-radius:8px;padding:7px;font-size:11px}.swatch{width:22px;height:5px;border-radius:3px}.wiredesc{flex:1}.progress{height:8px;background:#e5edf4;border-radius:20px;overflow:hidden;margin:8px 0}.progress div{height:100%;background:#239765;width:0}.resultline{padding:7px 0;border-bottom:1px solid #edf1f5;font-size:13px}.resultline:last-child{border:0}footer{max-width:1450px;margin:auto;padding:0 14px 18px;color:var(--muted);font-size:12px}
+@media(max-width:1050px){main{grid-template-columns:250px minmax(300px,1fr)}.right{grid-column:1/-1;display:grid;grid-template-columns:1fr 1fr;gap:12px}}
+@media(max-width:680px){main{grid-template-columns:1fr;padding:9px}.right{display:block;grid-column:auto}.panel{padding:11px}}
+
+/* Simulation styles */
+.switch-state{font-size:10px;font-weight:700;padding:1px 4px;border-radius:3px;min-width:24px;text-align:center;margin-top:2px}
+.switch-state.on{background:#198754;color:#fff}
+.switch-state.off{background:#e7eef5;color:#18344d}
+.switch-state.tripped{background:#b42318;color:#fff;animation:pulse 1s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.5}}
+.terminal.live{box-shadow:0 0 6px #ffc107,0 0 12px #ff8f00;border:2px solid #ffc107}
+.live-wire{stroke:#ff6b00 !important;filter:drop-shadow(0 0 3px #ff6b00);animation:flow 1s linear infinite}
+@keyframes flow{0%{stroke-dashoffset:12}100%{stroke-dashoffset:0}}
+.load-indicator{font-size:18px;margin-top:4px;animation:spin 1s linear infinite}
+@keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}
+.device[data-id]{cursor:pointer}
+.device .symbol{font-size:24px;line-height:1}
+.device b{font-size:11px;margin:2px 0}
+.device .name{font-size:9px;color:var(--muted);text-align:center}
+</style></head>
+<body>
+<header><h1>⚡ Симулятор сборки электрощитов</h1><p>Версия 0.3 · проверка соединений · обучение и экзамен</p></header>
+<main>
+<aside class="panel">
+<h2>1. Задание</h2>
+<label for="task">Тип щита</label><select id="task"><option value="home">Бытовой щит</option><option value="industrial">Промышленная цепь управления</option></select>
+<label for="mode">Режим</label><select id="mode"><option value="learn">Обучение с подсказками</option><option value="practice">Практика</option><option value="exam">Экзамен без подсказок</option></select>
+<div class="tip" id="goal">Собери учебную цепь бытового щита.</div>
+<h3>Компоненты</h3><div class="parts" id="parts"></div>
+<h3>Управление</h3><div class="row"><button class="secondary" id="reset">Сбросить</button><button class="secondary" id="hint">Подсказка</button></div>
+<p class="muted">Выбери аппарат, затем нажми на клемму. Чтобы соединить две клеммы, нажми на первую и вторую. Повторный клик по проводу не нужен.</p>
+</aside>
+<section class="panel">
+<h2>2. Монтажная панель</h2>
+<div class="row" style="margin-bottom:9px"><button id="check">Проверить схему</button><button class="secondary" id="clear">Удалить все провода</button></div>
+<div class="boardwrap"><div class="board" id="board"><div class="rail one"></div><div class="rail two"></div><svg class="wire-svg" id="svg" viewBox="0 0 700 420"></svg></div></div>
+<div class="status" id="status">Добавь компоненты, затем соединяй клеммы.</div>
+<h3>Прогресс</h3><div class="progress"><div id="bar"></div></div><div class="muted" id="score">Верные действия: 0 · Ошибки: 0</div>
+<h3>Результат проверки</h3><div id="results" class="muted">Проверка ещё не выполнялась.</div>
+</section>
+<aside class="panel right">
+<section><h2>3. Подключение</h2>
+<label for="color">Цвет провода</label><select id="color"><option value="#30343b">L — фаза (чёрный)</option><option value="#2878d0">N — нейтраль (синий)</option><option value="#269653">PE — защитный (зелёный)</option><option value="#c83b32">Управление (красный)</option></select>
+<div class="muted">Цвет можно выбирать для наглядности. В реальной установке используйте маркировку по проекту и действующим нормам.</div>
+<h3>Соединения</h3><div class="wirelist" id="wirelist"><div class="muted">Проводов пока нет.</div></div>
+</section>
+<section><h2>4. Объяснение</h2><div id="feedback" class="tip">Здесь появятся подсказки и причины ошибок.</div><h3>Условные правила</h3><div class="muted">Симулятор проверяет учебные связи между обозначенными клеммами, а не рассчитывает реальную электроустановку. Это не подтверждение безопасности проекта.</div></section>
+</aside></main>
+<footer>Учебный макет не заменяет проект, действующие нормы, практическое обучение или проверку квалифицированным специалистом. Не выполняйте реальные работы под напряжением.</footer>
+<script>
+const catalogs={
+home:[
+{type:'main',short:'QF0',name:'Вводной автомат',sym:'⏻',rail:1,terms:['L IN','L OUT'], switchable:true, protect:true, rated:25, tripType:'overcurrent'},
+{type:'rcd',short:'QFD',name:'УЗО / дифзащита',sym:'Δ',rail:1,terms:['L IN','L OUT','N IN','N OUT'], switchable:true, protect:true, rated:40, tripType:'residual', sensitivity:30},
+{type:'breaker',short:'QF1',name:'Автомат линии',sym:'I',rail:1,terms:['L IN','L OUT'], switchable:true, protect:true, rated:16, tripType:'overcurrent'},
+{type:'load',short:'LOAD',name:'Условная нагрузка',sym:'◉',rail:2,terms:['L','N'], loadType:'lamp', power:100},
+{type:'busN',short:'N',name:'Шина нейтрали',sym:'N',rail:2,terms:['N1','N2']},
+{type:'busPE',short:'PE',name:'Шина PE',sym:'⏚',rail:2,terms:['PE1','PE2']}
+],
+industrial:[
+{type:'main',short:'QS0',name:'Вводной выключатель',sym:'⏻',rail:1,terms:['L1 IN','L1 OUT'], switchable:true, protect:false},
+{type:'breaker',short:'QF1',name:'Автомат цепи',sym:'I',rail:1,terms:['L IN','L OUT'], switchable:true, protect:true, rated:10, tripType:'overcurrent'},
+{type:'contactor',short:'KM1',name:'Контактор',sym:'K',rail:1,terms:['L IN','T OUT','A1','A2'], switchable:true, coil:true, protect:false},
+{type:'overload',short:'FR1',name:'Тепловое реле',sym:'OL',rail:2,terms:['L IN','T OUT'], protect:true, tripType:'thermal'},
+{type:'coil',short:'COIL',name:'Катушка управления',sym:'∿',rail:2,terms:['A1','A2'], loadType:'coil'},
+{type:'load',short:'M',name:'Условный двигатель',sym:'M',rail:2,terms:['L','N'], loadType:'motor', power:500}
+]};
+
+// ===== CIRCUIT SOLVER =====
+class CircuitSolver {
+  constructor(devices, wires) {
+    this.devices = devices;
+    this.wires = wires;
+    this.nodes = new Map(); // key -> {voltage, terminals[]}
+    this.terminalToNode = new Map(); // terminalKey -> nodeId
+    this.results = {
+      terminalVoltages: new Map(), // terminalKey -> voltage
+      wireCurrents: new Map(), // wireId -> {current, voltageDrop}
+      loadStates: new Map(), // deviceId -> {powered, current, voltage}
+      trippedDevices: new Set()
+    };
+  }
+
+  solve() {
+    this.buildNodes();
+    this.assignVoltages();
+    this.calculateLoads();
+    this.checkProtection();
+    return this.results;
+  }
+
+  buildNodes() {
+    this.nodes.clear();
+    this.terminalToNode.clear();
+    let nodeId = 0;
+
+    // Each wire connects two terminals -> they share a node
+    // Use Union-Find for connected components
+    const parent = new Map();
+    const find = (x) => {
+      if (!parent.has(x)) parent.set(x, x);
+      if (parent.get(x) !== x) parent.set(x, find(parent.get(x)));
+      return parent.get(x);
+    };
+    const union = (a, b) => { parent.set(find(a), find(b)); };
+
+    // All terminals start as their own set
+    this.devices.forEach(d => d.terms.forEach(t => find(t.key)));
+
+    // Wires union the terminals
+    this.wires.forEach(w => {
+      union(w.a.key, w.b.key);
+    });
+
+    // Group terminals by root
+    const groups = new Map();
+    this.devices.forEach(d => d.terms.forEach(t => {
+      const root = find(t.key);
+      if (!groups.has(root)) groups.set(root, []);
+      groups.get(root).push({device: d, term: t});
+    }));
+
+    // Assign node IDs and voltages
+    groups.forEach((terminals, root) => {
+      const nid = `N${nodeId++}`;
+      terminals.forEach(({device, term}) => {
+        this.terminalToNode.set(term.key, nid);
+      });
+      this.nodes.set(nid, {
+        id: nid,
+        terminals: terminals,
+        voltage: 0, // Will be calculated
+        isGround: terminals.some(t => /^PE/i.test(t.term.label))
+      });
+    });
+  }
+
+  assignVoltages() {
+    // Find source nodes (connected to main input)
+    // Simplified: Assume 230V on L IN of main breaker when ON, 0V on N/PE buses
+    const mainDev = this.devices.find(d => d.type === 'main' || d.type === 'mains');
+    if (!mainDev) return;
+
+    const mainState = mainDev.state || 'off';
+    if (mainState !== 'on') return; // No power if main is off
+
+    // Set source voltage: L IN of main = 230V (phase)
+    const lInTerm = mainDev.terms.find(t => /L\s*IN/i.test(t.label));
+    if (lInTerm) {
+      const nodeId = this.terminalToNode.get(lInTerm.key);
+      if (nodeId) this.setNodeVoltage(nodeId, 230);
+    }
+
+    // Set reference: N and PE buses = 0V
+    this.devices.forEach(d => {
+      if (d.type === 'busN' || d.type === 'busPE') {
+        d.terms.forEach(t => {
+          const nodeId = this.terminalToNode.get(t.key);
+          if (nodeId) this.setNodeVoltage(nodeId, 0);
+        });
+      }
+    });
+
+    // Propagate voltages through closed switches
+    this.propagateVoltages();
+  }
+
+  setNodeVoltage(nodeId, voltage) {
+    const node = this.nodes.get(nodeId);
+    if (!node) return;
+    node.voltage = voltage;
+    node.fixed = true; // Voltage source / ground reference
+    node.terminals.forEach(({term}) => {
+      this.results.terminalVoltages.set(term.key, voltage);
+    });
+  }
+
+  propagateVoltages() {
+    // BFS from fixed voltage nodes through closed switches
+    const queue = [];
+    this.nodes.forEach((node, nid) => {
+      if (node.fixed) queue.push(nid);
+    });
+
+    const visited = new Set(queue);
+
+    while (queue.length) {
+      const currentNid = queue.shift();
+      const currentNode = this.nodes.get(currentNid);
+      if (!currentNode) continue;
+
+      // For each terminal in this node, check its device
+      currentNode.terminals.forEach(({device, term}) => {
+        // If device is a switchable element, check if it passes voltage to other terminals
+        const otherTerms = this.getOutputTerminals(device, term);
+        otherTerms.forEach(outTerm => {
+          const outNodeId = this.terminalToNode.get(outTerm.key);
+          if (outNodeId && !visited.has(outNodeId)) {
+            const outNode = this.nodes.get(outNodeId);
+            if (outNode && !outNode.fixed) {
+              outNode.voltage = currentNode.voltage;
+              outNode.terminals.forEach(({term: t}) => {
+                this.results.terminalVoltages.set(t.key, currentNode.voltage);
+              });
+              visited.add(outNodeId);
+              queue.push(outNodeId);
+            }
+          }
+        });
+      });
+    }
+  }
+
+  getOutputTerminals(device, inputTerm) {
+    const outputs = [];
+    const state = device.state || 'off';
+    const tripped = device.tripped === true;
+
+    if (tripped || state !== 'on') return outputs; // Open circuit
+
+    switch (device.type) {
+      case 'main':
+      case 'breaker':
+        // L IN -> L OUT
+        if (/IN/i.test(inputTerm.label)) {
+          const out = device.terms.find(t => /OUT/i.test(t.label));
+          if (out) outputs.push(out);
+        }
+        break;
+      case 'rcd':
+        // L IN -> L OUT, N IN -> N OUT (both must be ON)
+        if (/IN/i.test(inputTerm.label)) {
+          const out = device.terms.find(t => t.label.replace('IN','OUT') === inputTerm.label.replace('IN','OUT'));
+          if (out) outputs.push(out);
+        }
+        break;
+      case 'contactor':
+        // Power path: L IN -> T OUT (main contacts)
+        // Coil path: A1 -> A2 (coil energized separately)
+        if (/L\s*IN/i.test(inputTerm.label)) {
+          const out = device.terms.find(t => /T\s*OUT/i.test(t.label));
+          if (out) outputs.push(out);
+        }
+        // Coil doesn't pass power through, it's a load
+        break;
+      case 'overload':
+        // L IN -> T OUT (NC contact, opens on trip)
+        if (/IN/i.test(inputTerm.label)) {
+          const out = device.terms.find(t => /OUT/i.test(t.label));
+          if (out) outputs.push(out);
+        }
+        break;
+      case 'busN':
+      case 'busPE':
+        // Busbars connect all terminals together (already handled by node grouping)
+        device.terms.forEach(t => { if (t.key !== inputTerm.key) outputs.push(t); });
+        break;
+      default:
+        // Loads, coils - no pass-through
+        break;
+    }
+    return outputs;
+  }
+
+  calculateLoads() {
+    this.devices.forEach(d => {
+      if (d.type === 'load' || d.type === 'coil') {
+        const termL = d.terms.find(t => /^L$/i.test(t.label) || /L\s*IN/i.test(t.label) || /A1/i.test(t.label));
+        const termN = d.terms.find(t => /^N$/i.test(t.label) || /N\s*IN/i.test(t.label) || /A2/i.test(t.label));
+        
+        const vL = termL ? this.results.terminalVoltages.get(termL.key) : undefined;
+        const vN = termN ? this.results.terminalVoltages.get(termN.key) : undefined;
+
+        if (vL !== undefined && vN !== undefined) {
+          const voltage = Math.abs(vL - vN);
+          const powered = voltage > 10; // Threshold
+          let current = 0;
+          if (powered && d.power) {
+            current = d.power / voltage; // Simplified P=UI
+          }
+          this.results.loadStates.set(d.id, {powered, voltage, current, device: d});
+        }
+      }
+    });
+  }
+
+  checkProtection() {
+    this.devices.forEach(d => {
+      if (!d.protect) return;
+      const state = d.state || 'off';
+      if (state !== 'on') return;
+
+      let shouldTrip = false;
+      let tripReason = '';
+
+      switch (d.tripType) {
+        case 'overcurrent':
+          // Check current through this breaker
+          // Find load current on output side
+          const outTerm = d.terms.find(t => /OUT/i.test(t.label));
+          if (outTerm) {
+            const nodeId = this.terminalToNode.get(outTerm.key);
+            if (nodeId) {
+              // Sum currents of all loads downstream
+              let totalCurrent = 0;
+              this.results.loadStates.forEach(load => {
+                // Check if load is connected to this node
+                const loadDev = load.device;
+                loadDev.terms.forEach(t => {
+                  if (this.terminalToNode.get(t.key) === nodeId) {
+                    totalCurrent += load.current;
+                  }
+                });
+              });
+              if (totalCurrent > d.rated * 1.2) { // 120% of rated
+                shouldTrip = true;
+                tripReason = `Overcurrent: ${totalCurrent.toFixed(1)}A > ${d.rated}A`;
+              }
+              // Short circuit detection: L directly connected to N/PE on output
+              const outNode = this.nodes.get(nodeId);
+              if (outNode) {
+                const hasL = outNode.terminals.some(t => /^L/i.test(t.term.label) && !/OUT/i.test(t.term.label));
+                const hasN = outNode.terminals.some(t => /^N/i.test(t.term.label));
+                const hasPE = outNode.terminals.some(t => /^PE/i.test(t.term.label));
+                if (hasL && (hasN || hasPE)) {
+                  shouldTrip = true;
+                  tripReason = 'Short circuit detected';
+                }
+              }
+            }
+          }
+          break;
+        case 'residual':
+          // RCD: Compare L and N currents
+          const lIn = d.terms.find(t => /L\s*IN/i.test(t.label));
+          const nIn = d.terms.find(t => /N\s*IN/i.test(t.label));
+          const lOut = d.terms.find(t => /L\s*OUT/i.test(t.label));
+          const nOut = d.terms.find(t => /N\s*OUT/i.test(t.label));
+          
+          if (lIn && nIn && lOut && nOut) {
+            const lInNode = this.nodes.get(this.terminalToNode.get(lIn.key));
+            const nInNode = this.nodes.get(this.terminalToNode.get(nIn.key));
+            const lOutNode = this.nodes.get(this.terminalToNode.get(lOut.key));
+            const nOutNode = this.nodes.get(this.terminalToNode.get(nOut.key));
+            
+            // Simplified: check if L current != N current on output side
+            let lCurrent = 0, nCurrent = 0;
+            if (lOutNode) {
+              this.results.loadStates.forEach(load => {
+                load.device.terms.forEach(t => {
+                  if (this.terminalToNode.get(t.key) === lOutNode.id) lCurrent += load.current;
+                });
+              });
+            }
+            if (nOutNode) {
+              this.results.loadStates.forEach(load => {
+                load.device.terms.forEach(t => {
+                  if (this.terminalToNode.get(t.key) === nOutNode.id) nCurrent += load.current;
+                });
+              });
+            }
+            const residual = Math.abs(lCurrent - nCurrent);
+            if (residual > (d.sensitivity / 1000)) { // mA to A
+              shouldTrip = true;
+              tripReason = `Residual current: ${(residual*1000).toFixed(0)}mA > ${d.sensitivity}mA`;
+            }
+          }
+          break;
+        case 'thermal':
+          // Thermal overload - check motor current
+          const overloadIn = d.terms.find(t => /IN/i.test(t.label));
+          if (overloadIn) {
+            const nodeId = this.terminalToNode.get(overloadIn.key);
+            if (nodeId) {
+              let current = 0;
+              this.results.loadStates.forEach(load => {
+                load.device.terms.forEach(t => {
+                  if (this.terminalToNode.get(t.key) === nodeId) current += load.current;
+                });
+              });
+              if (current > (d.rated || 10) * 1.5) {
+                shouldTrip = true;
+                tripReason = `Thermal overload: ${current.toFixed(1)}A`;
+              }
+            }
+          }
+          break;
+      }
+
+      if (shouldTrip) {
+        d.tripped = true;
+        d.state = 'tripped';
+        this.results.trippedDevices.add(d.id);
+        console.log(`TRIP: ${d.short} - ${tripReason}`);
+      }
+    });
+  }
+}
+
+// ===== END CIRCUIT SOLVER =====
+
+let devices=[],wires=[],idCounter=1,good=0,bad=0,pending=null,selected=null;
+let simulationResults = null;
+const $=id=>document.getElementById(id), board=$('board');
+function active(){return catalogs[$('task').value]}
+function terminalColor(label){if(/^N/i.test(label))return '#2878d0';if(/^PE/i.test(label))return '#269653';if(/^A2/i.test(label))return '#c83b32';return '#30343b'}
+function say(s,kind=''){$('status').className='status '+kind;$('status').textContent=s;$('feedback').textContent=s}
+function renderParts(){ $('parts').innerHTML='';active().forEach(d=>{let b=document.createElement('button');b.className='part';b.innerHTML=`${d.sym} ${d.short}<small>${d.name}</small>`;b.onclick=()=>add(d);$('parts').appendChild(b)});$('goal').textContent=$('task').value==='home'?'Цель: вводной аппарат, дифференциальная защита, автомат линии и условная нагрузка; нейтраль и PE показаны отдельно.':'Цель: учебная силовая цепь с контактором и тепловым реле плюс цепь управления катушкой.'}
+function add(d){if(devices.filter(x=>x.type===d.type).length>=(d.type==='busN'||d.type==='busPE'?1:3)){say('Для этого задания такого компонента достаточно.','warn');return}let id=idCounter++;devices.push({...d,id,state:'off',tripped:false,terms:d.terms.map((label,i)=>({label,key:id+'_'+i,color:terminalColor(label),i}))});good++;render();score();say(`${d.name} добавлен. Выбери клеммы для подключения.`,'good');runSimulation()}
+function positions(){let result={};[1,2].forEach(r=>{let arr=devices.filter(d=>d.rail===r),step=Math.min(112,620/Math.max(arr.length,1));arr.forEach((d,i)=>result[d.id]={x:32+i*step,y:r===1?32:195,w:88,h:88})});return result}
+function point(did,key){let d=devices.find(x=>x.id===did),p=positions()[did];if(!d||!p)return null;let t=d.terms.find(x=>x.key===key),i=t.i;return {x:p.x+(i%2===0?0:88),y:i<2?p.y+88:p.y+16+(i-2)*20}}
+function render(){board.querySelectorAll('.device,.terminal').forEach(e=>e.remove());let pos=positions();devices.forEach(d=>{let p=pos[d.id],b=document.createElement('div');b.className='device'+(selected===d.id?' selected':'');b.dataset.id=d.id;b.style.left=p.x+'px';b.style.top=p.y+'px';b.innerHTML=`<span class="symbol">${d.sym}</span><b>${d.short}</b><span class="name">${d.name}</span>`;if(d.switchable){let stateCls=d.tripped?'tripped':(d.state==='on'?'on':'off');let stateTxt=d.tripped?'TRIP':(d.state==='on'?'I':'O');b.innerHTML+=`<span class="switch-state ${stateCls}" title="Нажми для переключения">${stateTxt}</span>`;b.onclick=()=>{toggleDevice(d.id);render();runSimulation()}}else{b.onclick=()=>{selected=d.id;render();say(`Выбран ${d.short}. Нажми на одну из его клемм.`,'warn')}}board.appendChild(b);d.terms.forEach(t=>{let q=document.createElement('button');q.className='terminal';let volt=simulationResults?.terminalVoltages?.get(t.key);if(volt!==undefined && volt>10)q.classList.add('live');q.style.background=t.color;q.style.left=(p.x+(t.i%2===0?-6:80))+'px';q.style.top=(t.i<2?p.y+80:p.y+9+(t.i-2)*20)+'px';q.title=d.short+': '+t.label+(volt!==undefined?` ${volt.toFixed(0)}V`:'');q.onclick=e=>{e.stopPropagation();pick(d.id,t)};board.appendChild(q)})});drawWires()}
+function pick(did,t){if(!pending){pending={did,key:t.key,label:t.label};say(`Начало: ${devices.find(d=>d.id===did).short} · ${t.label}. Теперь выбери вторую клемму.`,'warn');return}if(pending.key===t.key){pending=null;say('Это та же клемма. Выбери начало заново.','bad');return}if(pending.did===did){pending=null;bad++;score();say('Соединяй клеммы разных аппаратов.','bad');return}if(wires.some(w=>(w.a.key===pending.key&&w.b.key===t.key)||(w.a.key===t.key&&w.b.key===pending.key))){pending=null;say('Эти клеммы уже соединены.','warn');return}let color=$('color').value;wires.push({id:idCounter++,a:{...pending},b:{did,key:t.key,label:t.label},color});pending=null;good++;render();score();say('Провод создан. Проверка схемы оценит типы клемм и ожидаемые связи.','good')}
+function drawWires(){let svg=$('svg');svg.innerHTML='';wires.forEach(w=>{let a=point(w.a.did,w.a.key),b=point(w.b.did,w.b.key);if(!a||!b)return;let p=document.createElementNS('http://www.w3.org/2000/svg','path');p.setAttribute('d',`M${a.x+6} ${a.y+6} C${a.x+6} ${(a.y+b.y)/2},${b.x+6} ${(a.y+b.y)/2},${b.x+6} ${b.y+6}`);p.setAttribute('fill','none');p.setAttribute('stroke',w.color);p.setAttribute('stroke-width','4');p.setAttribute('stroke-linecap','round');svg.appendChild(p)});let list=$('wirelist');list.innerHTML='';if(!wires.length){list.innerHTML='<div class="muted">Проводов пока нет.</div>';return}wires.forEach(w=>{let a=devices.find(d=>d.id===w.a.did),b=devices.find(d=>d.id===w.b.did),el=document.createElement('div');el.className='wireitem';el.innerHTML=`<span class="swatch" style="background:${w.color}"></span><span class="wiredesc">${a?.short}:${w.a.label} ↔ ${b?.short}:${w.b.label}</span><button class="danger small">×</button>`;el.querySelector('button').onclick=()=>{wires=wires.filter(x=>x.id!==w.id);render();say('Провод удалён.','warn')};list.appendChild(el)})}
+function score(){$('score').textContent=`Верные действия: ${good} · Ошибки: ${bad}`;$('bar').style.width=Math.min(100,Math.round(devices.length*8+wires.length*8))+'%'}
+function reset(){devices=[];wires=[];idCounter=1;good=bad=0;pending=selected=null;simulationResults=null;render();score();$('results').textContent='Проверка ещё не выполнялась.';$('feedback').textContent='Добавь компоненты, затем соедини соответствующие клеммы.';say('Поле очищено. Начни сборку заново.')}
+
+function toggleDevice(did){let d=devices.find(x=>x.id===did);if(!d||!d.switchable)return;if(d.tripped){d.tripped=false;d.state='off';say(`${d.short}: сброс защиты. Переведи в ВКЛ.`,`warn`);runSimulation();return}d.state=d.state==='on'?'off':'on';say(`${d.short}: ${d.state==='on'?'ВКЛ':'ВЫКЛ'}`,`${d.state==='on'?'good':'warn'}`);runSimulation()}
+
+function runSimulation(){const solver=new CircuitSolver(devices,wires);simulationResults=solver.solve();updateWireVisuals();updateLoadVisuals();checkTrippedDevices()}
+
+function updateWireVisuals(){if(!simulationResults)return;const svg=$('svg');svg.querySelectorAll('path').forEach((path,i)=>{const wire=wires[i];if(!wire)return;const vA=simulationResults.terminalVoltages.get(wire.a.key)||0;const vB=simulationResults.terminalVoltages.get(wire.b.key)||0;const live=Math.abs(vA)>10||Math.abs(vB)>10;if(live){path.classList.add('live-wire');path.setAttribute('stroke-dasharray','8 4');path.setAttribute('stroke-dashoffset',Date.now()/20%12)}else{path.classList.remove('live-wire');path.removeAttribute('stroke-dasharray');path.removeAttribute('stroke-dashoffset')}})}
+
+function updateLoadVisuals(){if(!simulationResults)return;simulationResults.loadStates.forEach((load,did)=>{const devEl=board.querySelector(`.device[data-id="${did}"]`);if(devEl){let old=devEl.querySelector('.load-indicator');if(old)old.remove();if(load.powered){let ind=document.createElement('span');ind.className='load-indicator';ind.textContent=load.device.loadType==='motor'?'⟳':'☀';ind.title=`Напряжение: ${load.voltage.toFixed(0)}V, Ток: ${load.current.toFixed(2)}A`;devEl.appendChild(ind)}}})}
+
+function checkTrippedDevices(){if(!simulationResults)return;simulationResults.trippedDevices.forEach(did=>{const d=devices.find(x=>x.id===did);if(d&&!d.tripped){d.tripped=true;d.state='tripped';say(`⚠ ${d.short} СРАБОТАЛ: защита!`,'bad')}})}
+function hint(){if($('mode').value==='exam'){say('В режиме экзамена подсказки отключены. Заверши сборку и нажми «Проверить схему».','warn');return}let t=$('task').value;if(!devices.length)say('Начни с вводного аппарата. Затем добавь аппараты защиты и нагрузку.','warn');else if(t==='home'&&!devices.some(d=>d.type==='rcd'))say('Для учебного сценария добавь УЗО/дифзащиту и изучи обозначения L и N. Реальный выбор определяется проектом.','warn');else if(!wires.length)say('Нажми на клемму одного аппарата, затем на клемму другого. Цвет провода выбирается перед подключением.','warn');else say('Сверяй обозначения клемм. Соединения L, N и PE имеют разные назначения; не объединяй их произвольно.','warn')}
+function check(){let findings=[],t=$('task').value,types=devices.map(d=>d.type);const has=x=>types.includes(x);if(!devices.length)findings.push(['error','Добавь компоненты.']);if(!has('main'))findings.push(['error','Не установлен вводной аппарат.']);if(t==='home'){if(!has('rcd'))findings.push(['error','В учебном задании отсутствует УЗО/дифзащита.']);if(!has('breaker'))findings.push(['error','Добавь автомат отходящей линии.']);if(!has('load'))findings.push(['error','Добавь условную нагрузку.']);if(!has('busN'))findings.push(['error','Добавь шину N.']);if(!has('busPE'))findings.push(['error','Добавь шину PE.']);}else{if(!has('contactor'))findings.push(['error','Добавь контактор.']);if(!has('overload'))findings.push(['error','Добавь тепловое реле.']);if(!has('coil'))findings.push(['error','Добавь катушку управления.']);if(!has('load'))findings.push(['error','Добавь условный двигатель/нагрузку.']);}
+if(wires.length<2)findings.push(['error','Создано слишком мало соединений для проверки.']);
+let used=new Set();wires.forEach(w=>{used.add(w.a.key);used.add(w.b.key);let da=devices.find(d=>d.id===w.a.did),db=devices.find(d=>d.id===w.b.did);if(da&&db){let labels=[w.a.label,w.b.label];if(labels.some(x=>/^PE/i.test(x))&&labels.some(x=>/^L/i.test(x)))findings.push(['error','Проверь соединение PE с фазной клеммой: в учебной схеме эти цепи не должны смешиваться.']);if(labels.some(x=>/^N/i.test(x))&&labels.some(x=>/^L/i.test(x)))findings.push(['warn','В соединении обозначены L и N. Проверь схему: в этом макете они не должны соединяться напрямую.']);}});
+let disconnected=devices.filter(d=>!d.terms.some(x=>used.has(x.key)));if(disconnected.length)findings.push(['warn','Нет проводов к клеммам компонентов: '+disconnected.map(d=>d.short).join(', ')+'.']);
+if(!findings.length)findings.push(['good','Базовая проверка пройдена: компоненты присутствуют, соединения созданы, очевидных конфликтов обозначений не обнаружено. Это не сертификация схемы.']);
+$('results').innerHTML='';findings.forEach(([kind,msg])=>{let d=document.createElement('div');d.className='resultline';d.textContent=(kind==='good'?'✓ ':kind==='warn'?'⚠ ':'✗ ')+msg;$('results').appendChild(d)});let errors=findings.filter(x=>x[0]==='error').length;if(errors){bad++;say('Проверка завершена: исправь отмеченные пункты.','bad')}else{good++;say('Проверка завершена. Изучи результаты и проверь схему по проекту.','good')}score()}
+$('task').onchange=()=>{reset();renderParts();hint()};$('mode').onchange=()=>{if($('mode').value==='exam')say('Экзамен: подсказки отключены. Собери учебную цепь самостоятельно.','warn');else hint()};$('reset').onclick=reset;$('hint').onclick=hint;$('check').onclick=check;$('clear').onclick=()=>{wires=[];pending=null;render();say('Все провода удалены.','warn')};renderParts();render();score();
+</script></body></html>

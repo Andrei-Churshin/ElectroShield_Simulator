@@ -1,0 +1,18 @@
+# OS & Editor
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+*.log
+
+# Node (if we add build tools later)
+node_modules/
+dist/
+build/
+
+# Temp
+*.tmp
+*.temp
